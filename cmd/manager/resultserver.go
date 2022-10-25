@@ -144,13 +144,22 @@ func rotateResultDirectories(rootPath string, rotation uint16) error {
 		cmdLog.Error(err, "Couldn't rotate directories")
 		return err
 	}
+	cmdLog.Info("Pre-Sorted")
+	for _, dir := range dirs {
+		cmdLog.Info("Directory", dir.Path, dir.CreationTime)
+	}
+	cmdLog.Info("Post-Sorted")
 	sort.Slice(dirs, func(i, j int) bool { return dirs[i].CreationTime.After(dirs[j].CreationTime) })
+	for _, dir := range dirs {
+		cmdLog.Info("Directory", dir.Path, dir.CreationTime)
+	}
 	var lastError error
 	// No need to rotate, we're whithin the policy
 	if len(dirs) <= int(rotation) {
 		return nil
 	}
 	for _, dir := range dirs[rotation:] {
+		cmdLog.Info("Post-Sorted", dir.Path)
 		cmdLog.Info("Removing directory because of rotation policy", "directory", dir.Path)
 		err := os.RemoveAll(dir.Path)
 		if err != nil {
