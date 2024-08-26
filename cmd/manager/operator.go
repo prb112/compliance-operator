@@ -12,7 +12,8 @@ import (
 	"strings"
 
 	"github.com/go-logr/logr"
-	configv1 "github.com/openshift/api/config/v1"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	log "github.com/sirupsen/logrus"
 	"go.uber.org/zap/zapcore"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -22,8 +23,8 @@ import (
 
 	"github.com/ComplianceAsCode/compliance-operator/pkg/apis"
 	compv1alpha1 "github.com/ComplianceAsCode/compliance-operator/pkg/apis/compliance/v1alpha1"
-	"github.com/ComplianceAsCode/compliance-operator/pkg/controller"
 	"github.com/ComplianceAsCode/compliance-operator/pkg/controller/common"
+	"github.com/ComplianceAsCode/compliance-operator/pkg/controller/metrics"
 	ctrlMetrics "github.com/ComplianceAsCode/compliance-operator/pkg/controller/metrics"
 	"github.com/ComplianceAsCode/compliance-operator/pkg/utils"
 	"github.com/ComplianceAsCode/compliance-operator/pkg/xccdf"
@@ -44,7 +45,6 @@ import (
 	"k8s.io/client-go/kubernetes"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 	"k8s.io/client-go/rest"
-	clusterv1alpha1 "open-cluster-management.io/api/cluster/v1alpha1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -52,6 +52,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	crm "sigs.k8s.io/controller-runtime/pkg/metrics"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 )
@@ -73,6 +74,8 @@ func init() {
 
 	utilruntime.Must(compv1alpha1.SchemeBuilder.AddToScheme(operatorScheme))
 	//+kubebuilder:scaffold:scheme
+
+	_ = prometheus.NewRegistry()
 }
 
 type PlatformType string
@@ -201,6 +204,7 @@ func operatorLogger() logr.Logger {
 }
 
 func RunOperator(cmd *cobra.Command, args []string) {
+
 	flags := cmd.Flags()
 	flags.AddGoFlagSet(flag.CommandLine)
 	flags.Parse(args)
@@ -327,42 +331,42 @@ func RunOperator(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	si, getSIErr := getSchedulingInfo(ctx, mgr.GetAPIReader())
-	if getSIErr != nil {
-		setupLog.Error(getSIErr, "Getting control plane scheduling info")
-		os.Exit(1)
-	}
+	// si, getSIErr := getSchedulingInfo(ctx, mgr.GetAPIReader())
+	// // if getSIErr != nil {
+	// // 	setupLog.Error(getSIErr, "Getting control plane scheduling info")
+	// // 	os.Exit(1)
+	// // }
 
-	// Setup all Controllers
-	if err := controller.AddToManager(mgr, met, si, kubeClient); err != nil {
-		setupLog.Error(err, "")
-		os.Exit(1)
-	}
+	// // Setup all Controllers
+	// if err := controller.AddToManager(mgr, met, si, kubeClient); err != nil {
+	// 	setupLog.Error(err, "")
+	// 	os.Exit(1)
+	// }
 
-	infra := &configv1.Infrastructure{}
-	if err := kubeClient.RESTClient().Get().RequestURI("/apis/config.openshift.io/v1/infrastructures/cluster").Do(ctx).Into(infra); err != nil {
-		setupLog.Info("Couldn't get Infrastructure. This is not fatal though.")
-		setupLog.Error(err, "")
-	} else {
-		// Set environment variables for the controlPlaneTopology
-		os.Setenv("CONTROL_PLANE_TOPOLOGY", string(infra.Status.ControlPlaneTopology))
-	}
+	// infra := &configv1.Infrastructure{}
+	// if err := kubeClient.RESTClient().Get().RequestURI("/apis/config.openshift.io/v1/infrastructures/cluster").Do(ctx).Into(infra); err != nil {
+	// 	setupLog.Info("Couldn't get Infrastructure. This is not fatal though.")
+	// 	setupLog.Error(err, "")
+	// } else {
+	// 	// Set environment variables for the controlPlaneTopology
+	// 	os.Setenv("CONTROL_PLANE_TOPOLOGY", string(infra.Status.ControlPlaneTopology))
+	// }
 
 	// We need to set PLATFORM env var if the PLATFORM flag is set
 	pflag := os.Getenv("PLATFORM")
-	if pflag == "" {
-		clusterClaim := &clusterv1alpha1.ClusterClaim{}
-		if err := kubeClient.RESTClient().Get().RequestURI("/apis/cluster.open-cluster-management.io/v1alpha1/clusterclaims/product.open-cluster-management.io").Do(ctx).Into(clusterClaim); err != nil {
-			setupLog.Info("Couldn't get ClusterClaim. This is not fatal though.")
-			setupLog.Error(err, "")
-		} else {
-			// check the value of the clusterClaim
-			if clusterClaim.Spec.Value != "" {
-				pflag = clusterClaim.Spec.Value
-				os.Setenv("PLATFORM", pflag)
-			}
-		}
-	}
+	// if pflag == "" {
+	// 	clusterClaim := &clusterv1alpha1.ClusterClaim{}
+	// 	if err := kubeClient.RESTClient().Get().RequestURI("/apis/cluster.open-cluster-management.io/v1alpha1/clusterclaims/product.open-cluster-management.io").Do(ctx).Into(clusterClaim); err != nil {
+	// 		setupLog.Info("Couldn't get ClusterClaim. This is not fatal though.")
+	// 		setupLog.Error(err, "")
+	// 	} else {
+	// 		// check the value of the clusterClaim
+	// 		if clusterClaim.Spec.Value != "" {
+	// 			pflag = clusterClaim.Spec.Value
+	// 			os.Setenv("PLATFORM", pflag)
+	// 		}
+	// 	}
+	// }
 
 	if pflag == "" {
 		pflag, _ = flags.GetString("platform")
@@ -378,23 +382,36 @@ func RunOperator(cmd *cobra.Command, args []string) {
 		addMetrics(ctx, cfg, kubeClient, monitoringClient)
 	}
 
-	if err := ensureDefaultProfileBundles(ctx, mgr.GetClient(), namespaceList, platform); err != nil {
-		setupLog.Error(err, "Error creating default ProfileBundles.")
-		os.Exit(1)
-	}
+	// if err := ensureDefaultProfileBundles(ctx, mgr.GetClient(), namespaceList, platform); err != nil {
+	// 	setupLog.Error(err, "Error creating default ProfileBundles.")
+	// 	os.Exit(1)
+	// }
 
-	if err := ensureDefaultScanSettings(ctx, mgr.GetClient(), namespaceList, platform, si); err != nil {
-		setupLog.Error(err, "Error creating default ScanSettings.")
-		os.Exit(1)
-	}
+	// if err := .(ctx, mgr.GetClient(), namespaceList, platform, si); err != nil {
+	// 	setupLog.Error(err, "Error creating default ScanSettings.")
+	// 	os.Exit(1)
+	// }
 
 	setupLog.Info("Starting the Cmd.")
+
+	//if err := controller.AddToManager(mgr, met, kubeClient); err != nil {
+	//	setupLog.Error(err, "")
+	//	os.Exit(1)
+	//}
+	//go metrics.New().Start(ctx)
+	mgr.Add(metrics.New())
+	reg := prometheus.NewPedanticRegistry()
+	reg.Register(metrics.DefaultControllerMetrics().MetricComplianceScanError)
+	mgr.AddMetricsServerExtraHandler("/metrics-co", promhttp.HandlerFor(reg, promhttp.HandlerOpts{Registry: reg}))
+	prometheus.Register(metrics.DefaultControllerMetrics().MetricComplianceScanError)
+	crm.Registry.Register(metrics.DefaultControllerMetrics().MetricComplianceScanError)
 
 	// Start the Cmd
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "Manager exited non-zero")
 		os.Exit(1)
 	}
+
 }
 
 func getValidPlatform(p string) PlatformType {

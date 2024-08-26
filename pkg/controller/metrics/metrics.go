@@ -57,11 +57,23 @@ type ControllerMetrics struct {
 	metricComplianceScanStatus        *prometheus.CounterVec
 	metricComplianceRemediationStatus *prometheus.CounterVec
 	metricComplianceStateGauge        *prometheus.GaugeVec
+	MetricComplianceScanError         *prometheus.CounterVec
+	MetricComplianceScanStatus        *prometheus.CounterVec
+	MetricComplianceRemediationStatus *prometheus.CounterVec
+	MetricComplianceStateGauge        *prometheus.GaugeVec
 }
 
 func DefaultControllerMetrics() *ControllerMetrics {
 	return &ControllerMetrics{
 		metricComplianceScanError: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name:      metricNameComplianceScanError,
+				Namespace: metricNamespace,
+				Help:      "A counter for the total number of errors for a particular scan",
+			},
+			[]string{metricLabelScanName},
+		),
+		MetricComplianceScanError: prometheus.NewCounterVec(
 			prometheus.CounterOpts{
 				Name:      metricNameComplianceScanError,
 				Namespace: metricNamespace,
@@ -136,7 +148,12 @@ func (m *Metrics) Register() error {
 
 func (m *Metrics) Start(ctx context.Context) error {
 	m.log.Info("Starting to serve controller metrics")
-	http.Handle(HandlerPath, promhttp.Handler())
+	reg := prometheus.NewRegistry()
+	reg.Register(DefaultControllerMetrics().metricComplianceScanError)
+	reg.Register(DefaultControllerMetrics().metricComplianceScanStatus)
+	reg.Register(DefaultControllerMetrics().metricComplianceRemediationStatus)
+	reg.Register(DefaultControllerMetrics().metricComplianceStateGauge)
+	http.Handle(HandlerPath, promhttp.HandlerFor(reg, promhttp.HandlerOpts{Registry: reg}))
 
 	tlsConfig := &tls.Config{
 		MinVersion: tls.VersionTLS12,
@@ -148,7 +165,8 @@ func (m *Metrics) Start(ctx context.Context) error {
 		TLSConfig: tlsConfig,
 	}
 
-	err := server.ListenAndServeTLS("/var/run/secrets/serving-cert/tls.crt", "/var/run/secrets/serving-cert/tls.key")
+	err := server.ListenAndServe()
+	//.ListenAndServeTLS("/var/run/secrets/serving-cert/tls.crt", "/var/run/secrets/serving-cert/tls.key")
 	if err != nil {
 		// unhandled on purpose, we don't want to exit the operator.
 		m.log.Error(err, "Metrics service failed")
